@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>영업관리 시스템</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <link href="{{ base_path }}/static/css/style.css" rel="stylesheet">
+</head>
+<body>
+
+<!-- 사이드바 -->
+<nav id="sidebar">
+    <div class="sidebar-brand">
+        <div class="brand-icon"><i class="bi bi-briefcase-fill"></i></div>
+        <div class="brand-text">
+            <div class="brand-title">영업관리</div>
+            <div class="brand-sub">Sales Management</div>
+        </div>
+    </div>
+    <ul class="sidebar-menu">
+        <li class="menu-item active" data-section="dashboard"><i class="bi bi-speedometer2"></i><span>대시보드</span></li>
+        <li class="menu-item" data-section="sales-reps"><i class="bi bi-people-fill"></i><span>영업 담당자 관리</span></li>
+        <li class="menu-item" data-section="companies"><i class="bi bi-building"></i><span>업체 관리</span></li>
+        <li class="menu-item" data-section="contacts"><i class="bi bi-person-lines-fill"></i><span>업체 담당자 관리</span></li>
+        <li class="menu-item" data-section="meetings"><i class="bi bi-calendar-check-fill"></i><span>영업(미팅) 관리</span></li>
+        <li class="menu-item" data-section="codes"><i class="bi bi-gear-fill"></i><span>코드 관리</span></li>
+    </ul>
+    <div class="sidebar-footer">
+        <div class="user-info"><i class="bi bi-person-circle"></i><span id="sidebarUsername">admin</span></div>
+        <div class="sidebar-actions">
+            <button class="btn-icon" title="비밀번호 변경" onclick="showChangePwModal()"><i class="bi bi-key-fill"></i></button>
+            <button class="btn-icon" title="로그아웃" onclick="doLogout()"><i class="bi bi-box-arrow-right"></i></button>
+        </div>
+    </div>
+</nav>
+
+<!-- 메인 -->
+<div id="mainContent">
+    <div id="topBar">
+        <div class="page-title" id="pageTitle">대시보드</div>
+        <div class="topbar-user"><i class="bi bi-person-circle me-1"></i><span id="topUsername">admin</span></div>
+    </div>
+    <div id="contentArea">
+
+        <!-- 대시보드 -->
+        <div id="section-dashboard" class="section active"><div id="dashboardContent"></div></div>
+
+        <!-- 영업 담당자 -->
+        <div id="section-sales-reps" class="section">
+            <div class="section-toolbar">
+                <div class="search-box"><i class="bi bi-search"></i><input type="text" id="srSearch" placeholder="사원번호, 성명 검색..." oninput="SalesReps.search(this.value)"></div>
+                <button class="btn-add" onclick="SalesReps.showAddModal()"><i class="bi bi-plus-lg"></i> 영업 담당자 추가</button>
+            </div>
+            <div class="table-card">
+                <table class="data-table"><thead><tr><th>사원번호</th><th>성명</th><th>직급</th><th>직책</th><th>연락처</th><th>이메일</th><th>등록일</th><th class="col-actions">관리</th></tr></thead>
+                <tbody id="srTableBody"></tbody></table>
+                <div id="srEmpty" class="empty-state d-none"><i class="bi bi-people"></i><p>등록된 영업 담당자가 없습니다.</p></div>
+            </div>
+        </div>
+
+        <!-- 업체 관리 -->
+        <div id="section-companies" class="section">
+            <div class="section-toolbar">
+                <div class="search-box"><i class="bi bi-search"></i><input type="text" id="compSearch" placeholder="업체명 검색..." oninput="Companies.search(this.value)"></div>
+                <div class="toolbar-right">
+                    <button class="btn-import" onclick="Companies.showImportModal()"><i class="bi bi-file-earmark-excel"></i> 엑셀 일괄등록</button>
+                    <button class="btn-add" onclick="Companies.showAddModal()"><i class="bi bi-plus-lg"></i> 업체 추가</button>
+                </div>
+            </div>
+            <div class="table-card">
+                <table class="data-table"><thead><tr><th>업체코드</th><th>업체명</th><th>대표자명</th><th>사업자등록번호</th><th>법인등록번호</th><th>솔루션</th><th>연락처</th><th>등록일</th><th class="col-actions">관리</th></tr></thead>
+                <tbody id="compTableBody"></tbody></table>
+                <div id="compEmpty" class="empty-state d-none"><i class="bi bi-building"></i><p>등록된 업체가 없습니다.</p></div>
+            </div>
+        </div>
+
+        <!-- 업체 담당자 -->
+        <div id="section-contacts" class="section">
+            <div class="section-toolbar">
+                <div class="search-box"><i class="bi bi-search"></i><input type="text" id="ctSearch" placeholder="성명, 업체명 검색..." oninput="Contacts.search(this.value)"></div>
+                <div class="toolbar-right">
+                    <button class="btn-import" onclick="Contacts.showImportModal()"><i class="bi bi-file-earmark-excel"></i> 엑셀 일괄등록</button>
+                    <button class="btn-add" onclick="Contacts.showAddModal()"><i class="bi bi-plus-lg"></i> 업체 담당자 추가</button>
+                </div>
+            </div>
+            <div class="table-card">
+                <table class="data-table"><thead><tr><th style="width:50px">번호</th><th>성명</th><th>업체명</th><th>부서명</th><th>직급</th><th>직책</th><th>직군</th><th>휴대폰번호</th><th>이메일</th><th>등록일</th><th class="col-actions">관리</th></tr></thead>
+                <tbody id="ctTableBody"></tbody></table>
+                <div id="ctEmpty" class="empty-state d-none"><i class="bi bi-person-lines-fill"></i><p>등록된 업체 담당자가 없습니다.</p></div>
+            </div>
+        </div>
+
+        <!-- 영업(미팅) -->
+        <div id="section-meetings" class="section">
+            <div class="section-toolbar">
+                <div class="search-multi">
+                    <div class="search-box"><i class="bi bi-search"></i><input type="text" id="mtSearchCompany" placeholder="업체명 검색..." oninput="Meetings.search()"></div>
+                    <div class="search-box"><i class="bi bi-search"></i><input type="text" id="mtSearchContent" placeholder="미팅내용 검색..." oninput="Meetings.search()"></div>
+                </div>
+                <button class="btn-add" onclick="Meetings.showAddModal()"><i class="bi bi-plus-lg"></i> 미팅 추가</button>
+            </div>
+            <div class="table-card">
+                <table class="data-table"><thead><tr><th>참석업체</th><th>미팅구분</th><th>미팅예정일시</th><th>미팅일시</th><th>미팅내용</th><th>영업담당자</th><th>등록자</th><th>등록일</th><th class="col-actions">관리</th></tr></thead>
+                <tbody id="mtTableBody"></tbody></table>
+                <div id="mtEmpty" class="empty-state d-none"><i class="bi bi-calendar-check"></i><p>등록된 미팅이 없습니다.</p></div>
+            </div>
+        </div>
+
+        <!-- 코드 관리 -->
+        <div id="section-codes" class="section">
+            <div class="codes-tabs">
+                <button class="code-tab active" onclick="Codes.switchTab('직급',this)">직급</button>
+                <button class="code-tab" onclick="Codes.switchTab('직책',this)">직책</button>
+                <button class="code-tab" onclick="Codes.switchTab('직군',this)">직군</button>
+                <button class="code-tab" onclick="Codes.switchTab('솔루션',this)">솔루션</button>
+            </div>
+            <div class="section-toolbar mt-3">
+                <div class="code-current-cat"><span id="codeCurrentCat">직급</span> 목록</div>
+                <button class="btn-add" onclick="Codes.showAddModal()"><i class="bi bi-plus-lg"></i> <span id="codeAddBtnText">직급</span> 추가</button>
+            </div>
+            <div class="table-card">
+                <table class="data-table"><thead><tr><th>순번</th><th>코드값</th><th>등록일</th><th class="col-actions">관리</th></tr></thead>
+                <tbody id="codeTableBody"></tbody></table>
+                <div id="codeEmpty" class="empty-state d-none"><i class="bi bi-gear"></i><p>등록된 코드가 없습니다.</p></div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<!-- ===== 삭제 확인 모달 ===== -->
+<div class="modal fade" id="deleteModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered" style="max-width:360px">
+        <div class="modal-content">
+            <div class="modal-body text-center py-4">
+                <i class="bi bi-exclamation-triangle-fill text-danger" style="font-size:2.5rem"></i>
+                <h6 class="fw-bold mt-3 mb-2">삭제 확인</h6>
+                <p class="text-muted mb-4" id="deleteModalMsg">정말 삭제하시겠습니까?</p>
+                <div class="d-flex gap-2 justify-content-center">
+                    <button class="btn btn-danger px-4" id="deleteConfirmBtn">삭제</button>
+                    <button class="btn btn-outline-secondary px-4" data-bs-dismiss="modal">취소</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ===== 영업 담당자 모달 ===== -->
+<div class="modal fade" id="srModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header"><h5 class="modal-title" id="srModalTitle">영업 담당자 추가</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body">
+                <input type="hidden" id="srId">
+                <div class="row g-3">
+                    <div class="col-6"><label class="form-label required">사원번호</label><input type="text" class="form-control" id="srEmpNo"></div>
+                    <div class="col-6"><label class="form-label required">성명</label><input type="text" class="form-control" id="srName"></div>
+                    <div class="col-6"><label class="form-label">직급</label><select class="form-select" id="srRank"><option value="">선택</option></select></div>
+                    <div class="col-6"><label class="form-label">직책</label><select class="form-select" id="srPosition"><option value="">선택</option></select></div>
+                    <div class="col-6"><label class="form-label">연락처</label><input type="text" class="form-control" id="srPhone" placeholder="010-0000-0000"></div>
+                    <div class="col-6"><label class="form-label">이메일</label><input type="email" class="form-control" id="srEmail"></div>
+                </div>
+            </div>
+            <div class="modal-footer"><button class="btn btn-primary" onclick="SalesReps.save()">저장</button><button class="btn btn-outline-secondary" data-bs-dismiss="modal">취소</button></div>
+        </div>
+    </div>
+</div>
+
+<!-- ===== 업체 모달 ===== -->
+<div class="modal fade" id="compModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content">
+            <div class="modal-header"><h5 class="modal-title" id="compModalTitle">업체 추가</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body">
+                <input type="hidden" id="compId">
+                <div class="row g-3">
+                    <div class="col-md-8"><label class="form-label required">업체명</label><input type="text" class="form-control" id="compName"></div>
+                    <div class="col-md-4"><label class="form-label">업체코드</label><input type="text" class="form-control" id="compCode" readonly placeholder="자동생성" style="background:#f8f9fa;color:#6c757d"></div>
+                    <div class="col-6"><label class="form-label">대표자명</label><input type="text" class="form-control" id="compCeo"></div>
+                    <div class="col-6"><label class="form-label">연락처</label><input type="text" class="form-control" id="compPhone"></div>
+                    <div class="col-6"><label class="form-label">사업자등록번호</label><input type="text" class="form-control" id="compBizNo" placeholder="000-00-00000"></div>
+                    <div class="col-6"><label class="form-label">법인등록번호</label><input type="text" class="form-control" id="compCorpNo" placeholder="000000-0000000"></div>
+                    <div class="col-12"><label class="form-label">주소</label><input type="text" class="form-control" id="compAddress"></div>
+                    <div class="col-12">
+                        <label class="form-label">솔루션 정보</label>
+                        <div id="compSolutionList" class="checkbox-grid"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer"><button class="btn btn-primary" onclick="Companies.save()">저장</button><button class="btn btn-outline-secondary" data-bs-dismiss="modal">취소</button></div>
+        </div>
+    </div>
+</div>
+
+<!-- ===== 업체 엑셀 일괄등록 모달 ===== -->
+<div class="modal fade" id="importModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header"><h5 class="modal-title">업체 엑셀 일괄등록</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body">
+                <div class="alert alert-info small mb-3">
+                    <i class="bi bi-info-circle me-1"></i><strong>엑셀 파일 형식</strong><br>
+                    1행은 헤더(무시됨), 2행부터 데이터 입력<br>
+                    A:업체명(필수) / B:대표자명 / C:사업자등록번호 / D:법인등록번호 / E:주소 / F:연락처
+                </div>
+                <div class="mb-3"><label class="form-label required">파일 선택 (Excel 또는 CSV)</label><input type="file" class="form-control" id="importFile" accept=".xlsx,.xls,.csv"></div>
+                <div id="importResult" class="d-none"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline-success" onclick="downloadTemplate('/api/companies/template')"><i class="bi bi-download me-1"></i>양식 다운로드</button>
+                <button class="btn btn-success" onclick="Companies.doImport()"><i class="bi bi-upload me-1"></i>업로드</button>
+                <button class="btn btn-outline-secondary" data-bs-dismiss="modal">닫기</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ===== 업체 담당자 엑셀 일괄등록 모달 ===== -->
+<div class="modal fade" id="ctImportModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header"><h5 class="modal-title">업체 담당자 엑셀 일괄등록</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body">
+                <div class="alert alert-info small mb-3">
+                    <i class="bi bi-info-circle me-1"></i><strong>엑셀 파일 형식</strong><br>
+                    1행은 헤더(무시됨), 2행부터 데이터 입력<br>
+                    A:성명(필수) / B:업체명(필수) / C:업체코드 / D:부서명 / E:직급 / F:직책 / G:직군 / H:일반전화 / I:휴대폰번호 / J:이메일<br>
+                    <span class="text-danger">※ 업체코드 또는 업체명 중 하나로 업체를 찾습니다. 업체코드가 있으면 우선 적용됩니다.</span>
+                </div>
+                <div class="mb-3"><label class="form-label required">파일 선택 (Excel 또는 CSV)</label><input type="file" class="form-control" id="ctImportFile" accept=".xlsx,.xls,.csv"></div>
+                <div id="ctImportResult" class="d-none"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline-success" onclick="downloadTemplate('/api/contacts/template')"><i class="bi bi-download me-1"></i>양식 다운로드</button>
+                <button class="btn btn-success" onclick="Contacts.doImport()"><i class="bi bi-upload me-1"></i>업로드</button>
+                <button class="btn btn-outline-secondary" data-bs-dismiss="modal">닫기</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ===== 업체 담당자 모달 ===== -->
+<div class="modal fade" id="ctModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content">
+            <div class="modal-header"><h5 class="modal-title" id="ctModalTitle">업체 담당자 추가</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body">
+                <input type="hidden" id="ctId">
+                <div class="row g-3">
+                    <div class="col-6"><label class="form-label required">성명</label><input type="text" class="form-control" id="ctName"></div>
+                    <div class="col-6">
+                        <label class="form-label required">업체명</label>
+                        <select class="form-select" id="ctCompany"><option value="">업체 선택</option></select>
+                        <div id="ctTransferRow" class="mt-2 d-none">
+                            <div class="d-flex align-items-center gap-2 p-2 border rounded" style="background:#fff8e1">
+                                <input class="form-check-input mt-0 flex-shrink-0" type="checkbox" id="ctIsTransfer">
+                                <label class="form-check-label text-warning-emphasis fw-semibold small mb-0" for="ctIsTransfer">
+                                    <i class="bi bi-arrow-right-circle me-1"></i>이직 처리 (이전 업체 이력 저장)
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-6"><label class="form-label">부서명</label><input type="text" class="form-control" id="ctDept"></div>
+                    <div class="col-6"><label class="form-label">직급</label><select class="form-select" id="ctRank"><option value="">선택</option></select></div>
+                    <div class="col-6"><label class="form-label">직책</label><select class="form-select" id="ctPosition"><option value="">선택</option></select></div>
+                    <div class="col-6"><label class="form-label">직군</label><select class="form-select" id="ctJobType"><option value="">선택</option></select></div>
+                    <div class="col-6"><label class="form-label">일반전화번호</label><input type="text" class="form-control" id="ctOfficePhone"></div>
+                    <div class="col-6"><label class="form-label">휴대폰번호</label><input type="text" class="form-control" id="ctMobilePhone"></div>
+                    <div class="col-12"><label class="form-label">이메일</label><input type="email" class="form-control" id="ctEmail"></div>
+                </div>
+            </div>
+            <div class="modal-footer"><button class="btn btn-primary" onclick="Contacts.save()">저장</button><button class="btn btn-outline-secondary" data-bs-dismiss="modal">취소</button></div>
+        </div>
+    </div>
+</div>
+
+<!-- ===== 업체 담당자 상세 모달 ===== -->
+<div class="modal fade" id="ctDetailModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-xl">
+        <div class="modal-content">
+            <div class="modal-header"><h5 class="modal-title">업체 담당자 상세 정보</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body" id="ctDetailBody"></div>
+            <div class="modal-footer"><button class="btn btn-outline-secondary" data-bs-dismiss="modal">닫기</button></div>
+        </div>
+    </div>
+</div>
+
+<!-- ===== 미팅 등록/수정 모달 ===== -->
+<div class="modal fade" id="mtModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-xl">
+        <div class="modal-content">
+            <div class="modal-header"><h5 class="modal-title" id="mtModalTitle">미팅 추가</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body">
+                <input type="hidden" id="mtId">
+                <div class="row g-3">
+                    <div class="col-md-4">
+                        <label class="form-label">미팅구분</label>
+                        <select class="form-select" id="mtType">
+                            <option value="">선택</option>
+                            <option value="내방">내방</option>
+                            <option value="화상">화상</option>
+                            <option value="방문">방문</option>
+                            <option value="전화">전화</option>
+                            <option value="기타">기타</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">미팅예정일시</label>
+                        <input type="datetime-local" class="form-control" id="mtScheduled">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">미팅일시</label>
+                        <input type="datetime-local" class="form-control" id="mtDatetime">
+                    </div>
+
+                    <div class="col-12">
+                        <label class="form-label fw-bold">참석업체 및 담당자</label>
+                        <div class="participant-selector-box">
+                            <div class="row g-2">
+                                <div class="col-md-4">
+                                    <label class="form-label-sm">① 업체 선택</label>
+                                    <select class="form-select form-select-sm" id="mtSelectCompany" onchange="Meetings.onCompanySelect()">
+                                        <option value="">업체를 선택하세요</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-8">
+                                    <label class="form-label-sm">② 담당자 선택 <span class="text-muted">(복수 선택 가능)</span></label>
+                                    <div id="mtContactOptions" class="contact-options-area">
+                                        <span class="placeholder-text">업체를 선택하면 담당자 목록이 표시됩니다.</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="mt-2">
+                                <button type="button" class="btn btn-sm btn-outline-primary" onclick="Meetings.addParticipants()">
+                                    <i class="bi bi-plus-circle me-1"></i>참석자 추가
+                                </button>
+                                <span class="text-muted small ms-2">업체와 담당자 선택 후 [참석자 추가] 클릭</span>
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <label class="form-label-sm fw-semibold">선택된 참석업체/담당자</label>
+                            <div id="mtSelectedParticipants" class="selected-participants-box">
+                                <span class="placeholder-text">아직 선택된 참석자가 없습니다.</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col-12">
+                        <label class="form-label fw-bold">영업 담당자</label>
+                        <div id="mtSalesRepList" class="checkbox-grid"></div>
+                    </div>
+
+                    <div class="col-12"><label class="form-label">미팅내용</label><textarea class="form-control" id="mtContent" rows="3"></textarea></div>
+                    <div class="col-md-6"><label class="form-label">결론</label><textarea class="form-control" id="mtConclusion" rows="2"></textarea></div>
+                    <div class="col-md-6"><label class="form-label">후속과제</label><textarea class="form-control" id="mtFollowUp" rows="2"></textarea></div>
+                    <div class="col-md-4">
+                        <label class="form-label">등록자</label>
+                        <select class="form-select" id="mtRegisteredBy"><option value="">선택</option></select>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer"><button class="btn btn-primary" onclick="Meetings.save()">저장</button><button class="btn btn-outline-secondary" data-bs-dismiss="modal">취소</button></div>
+        </div>
+    </div>
+</div>
+
+<!-- ===== 미팅 상세 모달 ===== -->
+<div class="modal fade" id="mtDetailModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-xl">
+        <div class="modal-content">
+            <div class="modal-header"><h5 class="modal-title">미팅 상세 정보</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body" id="mtDetailBody"></div>
+            <div class="modal-footer"><button class="btn btn-outline-secondary" data-bs-dismiss="modal">닫기</button></div>
+        </div>
+    </div>
+</div>
+
+<!-- ===== 코드 모달 ===== -->
+<div class="modal fade" id="codeModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered" style="max-width:360px">
+        <div class="modal-content">
+            <div class="modal-header"><h5 class="modal-title" id="codeModalTitle">코드 추가</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body">
+                <input type="hidden" id="codeId">
+                <div class="mb-3"><label class="form-label required">코드값</label><input type="text" class="form-control" id="codeValue"></div>
+            </div>
+            <div class="modal-footer"><button class="btn btn-primary" onclick="Codes.save()">저장</button><button class="btn btn-outline-secondary" data-bs-dismiss="modal">취소</button></div>
+        </div>
+    </div>
+</div>
+
+<!-- ===== 비밀번호 변경 모달 ===== -->
+<div class="modal fade" id="changePwModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered" style="max-width:360px">
+        <div class="modal-content">
+            <div class="modal-header"><h5 class="modal-title">비밀번호 변경</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body">
+                <div class="mb-3"><label class="form-label">현재 비밀번호</label><input type="password" class="form-control" id="currentPw"></div>
+                <div class="mb-3"><label class="form-label">새 비밀번호</label><input type="password" class="form-control" id="newPw"></div>
+                <div class="mb-3"><label class="form-label">새 비밀번호 확인</label><input type="password" class="form-control" id="confirmPw"></div>
+            </div>
+            <div class="modal-footer"><button class="btn btn-primary" onclick="doChangePassword()">변경</button><button class="btn btn-outline-secondary" data-bs-dismiss="modal">취소</button></div>
+        </div>
+    </div>
+</div>
+
+<!-- ===== Toast ===== -->
+<div class="toast-container position-fixed bottom-0 end-0 p-3">
+    <div id="appToast" class="toast align-items-center border-0" role="alert">
+        <div class="d-flex">
+            <div class="toast-body" id="toastMsg"></div>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>window.BASE = '{{ base_path }}';</script>
+<script src="{{ base_path }}/static/js/app.js"></script>
+</body>
+</html>
