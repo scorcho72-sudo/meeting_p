@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 # ============================================================
-# 영업관리 시스템 - Flask + PostgreSQL 메인 앱
+# 영업관리 시스템 - Flask + PostgreSQL (pg8000) 메인 앱
 # 실행: python app.py
-# WSGI: gunicorn app:app
 # ============================================================
 
 import io
 import csv
-import re
+import ssl
 from datetime import datetime, timedelta
 from functools import wraps
+from urllib.parse import quote
 
-import psycopg2
-import psycopg2.extras
+import pg8000.dbapi
 import openpyxl
 
 try:
@@ -40,17 +39,21 @@ _BASE = BASE_PATH.rstrip('/') if BASE_PATH else ''
 
 
 # ============================================================
-# DB 연결 (요청별 커넥션)
+# DB 연결 (요청별 커넥션, pg8000 + Supabase SSL)
 # ============================================================
 
 def get_db():
     if 'db' not in g:
-        g.db = psycopg2.connect(
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+        conn = pg8000.dbapi.connect(
             host=DB_HOST, port=DB_PORT,
-            dbname=DB_NAME, user=DB_USER, password=DB_PASS,
-            cursor_factory=psycopg2.extras.RealDictCursor
+            database=DB_NAME, user=DB_USER, password=DB_PASS,
+            ssl_context=ssl_ctx
         )
-        g.db.autocommit = False
+        conn.autocommit = False
+        g.db = conn
     return g.db
 
 
@@ -59,19 +62,34 @@ def close_db(exc):
     db = g.pop('db', None)
     if db is not None:
         if exc:
-            try:
-                db.rollback()
-            except Exception:
-                pass
+            try: db.rollback()
+            except Exception: pass
         else:
-            try:
-                db.commit()
-            except Exception:
-                pass
-        try:
-            db.close()
-        except Exception:
-            pass
+            try: db.commit()
+            except Exception: pass
+        try: db.close()
+        except Exception: pass
+
+
+# ============================================================
+# DB 헬퍼 (pg8000은 dict 반환이 없으므로 직접 변환)
+# ============================================================
+
+def fetchall_dict(cur):
+    """커서 결과를 [{col: val, ...}, ...] 형태로 반환"""
+    if not cur.description:
+        return []
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def fetchone_dict(cur):
+    """커서 결과 1행을 {col: val, ...} 형태로 반환"""
+    if not cur.description:
+        return None
+    cols = [d[0] for d in cur.description]
+    row = cur.fetchone()
+    return dict(zip(cols, row)) if row else None
 
 
 # ============================================================
@@ -113,16 +131,17 @@ def generate_company_code(cur):
         "SELECT COUNT(*) AS cnt FROM sm_companies WHERE company_code LIKE %s",
         (today + '-%',)
     )
-    row = cur.fetchone()
+    row = fetchone_dict(cur)
     seq = (row['cnt'] if row else 0) + 1
     return f"{today}-{seq:03d}"
 
 
 def serialize_row(row):
+    """datetime 등 직렬화 불가 타입을 문자열로 변환"""
     if row is None:
         return None
     result = {}
-    for k, v in dict(row).items():
+    for k, v in row.items():
         if hasattr(v, 'isoformat'):
             result[k] = v.isoformat()
         else:
@@ -154,7 +173,6 @@ def read_xlsx(file_obj):
 
 
 def read_csv_bytes(raw_bytes):
-    # UTF-8 BOM 처리
     if raw_bytes.startswith(b'\xef\xbb\xbf'):
         raw_bytes = raw_bytes[3:]
         encoding = 'utf-8'
@@ -166,7 +184,6 @@ def read_csv_bytes(raw_bytes):
             encoding = 'utf-8'
         if encoding and encoding.lower() in ('euc-kr', 'cp949', 'ms949', 'uhc'):
             encoding = 'cp949'
-
     try:
         text = raw_bytes.decode(encoding, errors='replace')
     except (LookupError, TypeError):
@@ -191,8 +208,7 @@ def read_upload_file(file_storage):
     if ext in ('xlsx', 'xls'):
         return read_xlsx(file_storage.stream)
     elif ext == 'csv':
-        raw = file_storage.read()
-        return read_csv_bytes(raw)
+        return read_csv_bytes(file_storage.read())
     return []
 
 
@@ -203,8 +219,6 @@ def download_csv(display_filename, headers, sample_rows=None):
     for row in (sample_rows or []):
         writer.writerow(row)
     csv_bytes = b'\xef\xbb\xbf' + buf.getvalue().encode('utf-8')
-
-    from urllib.parse import quote
     encoded_name = quote(display_filename, safe='')
     return Response(
         csv_bytes,
@@ -223,14 +237,14 @@ def download_csv(display_filename, headers, sample_rows=None):
 @app.route('/')
 def index():
     if not session.get('user_id'):
-        return redirect(('' if not _BASE else _BASE) + '/login')
+        return redirect((_BASE or '') + '/login')
     return render_template('app.html', base_path=_BASE)
 
 
 @app.route('/login')
 def login_page():
     if session.get('user_id'):
-        return redirect(('' if not _BASE else _BASE) + '/')
+        return redirect((_BASE or '') + '/')
     return render_template('login.html', base_path=_BASE)
 
 
@@ -245,10 +259,9 @@ def api_login():
     password = b.get('password') or ''
     if not username or not password:
         return jsonify({'success': False, 'message': '아이디와 비밀번호를 입력하세요.'}), 400
-
     cur = get_db().cursor()
     cur.execute("SELECT * FROM sm_users WHERE username = %s LIMIT 1", (username,))
-    user = cur.fetchone()
+    user = fetchone_dict(cur)
     if user and check_password_hash(user['password'], password):
         session['user_id'] = user['id']
         session['username'] = user['username']
@@ -270,14 +283,12 @@ def api_change_password():
     new_pw  = b.get('new_password') or ''
     if not current or not new_pw:
         return jsonify({'success': False, 'message': '모든 항목을 입력하세요.'}), 400
-
     db = get_db()
     cur = db.cursor()
     cur.execute("SELECT password FROM sm_users WHERE id = %s LIMIT 1", (session['user_id'],))
-    user = cur.fetchone()
+    user = fetchone_dict(cur)
     if not user or not check_password_hash(user['password'], current):
         return jsonify({'success': False, 'message': '현재 비밀번호가 올바르지 않습니다.'}), 400
-
     cur.execute(
         "UPDATE sm_users SET password = %s WHERE id = %s",
         (generate_password_hash(new_pw), session['user_id'])
@@ -308,17 +319,16 @@ def api_dashboard():
         "SELECT id, company_name, created_at FROM sm_companies WHERE created_at >= %s ORDER BY created_at DESC",
         (ago,)
     )
-    new_companies = serialize_rows(cur.fetchall())
+    new_companies = serialize_rows(fetchall_dict(cur))
 
     cur.execute(
         """SELECT cc.id, cc.name, c.company_name, cc.department, cc.created_at
            FROM sm_company_contacts cc
            JOIN sm_companies c ON cc.company_id = c.id
-           WHERE cc.created_at >= %s
-           ORDER BY cc.created_at DESC""",
+           WHERE cc.created_at >= %s ORDER BY cc.created_at DESC""",
         (ago,)
     )
-    new_contacts = serialize_rows(cur.fetchall())
+    new_contacts = serialize_rows(fetchall_dict(cur))
 
     cur.execute(
         """SELECT m.id, m.meeting_type, m.meeting_datetime, m.content, m.created_at,
@@ -327,17 +337,12 @@ def api_dashboard():
            LEFT JOIN sm_meeting_companies mc ON m.id = mc.meeting_id
            LEFT JOIN sm_companies c ON mc.company_id = c.id
            WHERE m.created_at >= %s
-           GROUP BY m.id
-           ORDER BY m.created_at DESC""",
+           GROUP BY m.id ORDER BY m.created_at DESC""",
         (ago,)
     )
-    new_meetings = serialize_rows(cur.fetchall())
+    new_meetings = serialize_rows(fetchall_dict(cur))
 
-    return jsonify({
-        'new_companies': new_companies,
-        'new_contacts':  new_contacts,
-        'new_meetings':  new_meetings,
-    })
+    return jsonify({'new_companies': new_companies, 'new_contacts': new_contacts, 'new_meetings': new_meetings})
 
 
 # ============================================================
@@ -357,7 +362,7 @@ def api_sr_list():
         )
     else:
         cur.execute("SELECT * FROM sm_sales_reps ORDER BY created_at DESC")
-    return jsonify(serialize_rows(cur.fetchall()))
+    return jsonify(serialize_rows(fetchall_dict(cur)))
 
 
 @app.route('/api/sales-reps/<int:rep_id>', methods=['GET'])
@@ -365,7 +370,7 @@ def api_sr_list():
 def api_sr_get(rep_id):
     cur = get_db().cursor()
     cur.execute("SELECT * FROM sm_sales_reps WHERE id = %s LIMIT 1", (rep_id,))
-    row = cur.fetchone()
+    row = fetchone_dict(cur)
     if not row:
         return jsonify({'error': '존재하지 않습니다.'}), 404
     return jsonify(serialize_row(row))
@@ -389,9 +394,11 @@ def api_sr_create():
         )
         db.commit()
         return jsonify({'success': True})
-    except psycopg2.errors.UniqueViolation:
+    except Exception as e:
         db.rollback()
-        return jsonify({'success': False, 'message': '이미 존재하는 사원번호입니다.'}), 400
+        if '23505' in str(e) or 'unique' in str(e).lower():
+            return jsonify({'success': False, 'message': '이미 존재하는 사원번호입니다.'}), 400
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @app.route('/api/sales-reps/<int:rep_id>', methods=['PUT'])
@@ -412,9 +419,11 @@ def api_sr_update(rep_id):
         )
         db.commit()
         return jsonify({'success': True})
-    except psycopg2.errors.UniqueViolation:
+    except Exception as e:
         db.rollback()
-        return jsonify({'success': False, 'message': '이미 존재하는 사원번호입니다.'}), 400
+        if '23505' in str(e) or 'unique' in str(e).lower():
+            return jsonify({'success': False, 'message': '이미 존재하는 사원번호입니다.'}), 400
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @app.route('/api/sales-reps/<int:rep_id>', methods=['DELETE'])
@@ -432,14 +441,12 @@ def api_sr_delete(rep_id):
 
 def comp_solutions(cur, company_id):
     cur.execute(
-        """SELECT cd.id, cd.code_value
-           FROM sm_company_solutions cs
+        """SELECT cd.id, cd.code_value FROM sm_company_solutions cs
            JOIN sm_codes cd ON cs.solution_id = cd.id
-           WHERE cs.company_id = %s
-           ORDER BY cd.sort_order""",
+           WHERE cs.company_id = %s ORDER BY cd.sort_order""",
         (company_id,)
     )
-    return serialize_rows(cur.fetchall())
+    return serialize_rows(fetchall_dict(cur))
 
 
 def comp_save_solutions(db, company_id, solution_ids):
@@ -448,7 +455,7 @@ def comp_save_solutions(db, company_id, solution_ids):
     for sid in solution_ids:
         try:
             cur.execute(
-                "INSERT INTO sm_company_solutions (company_id, solution_id) VALUES (%s, %s)",
+                "INSERT INTO sm_company_solutions (company_id, solution_id) VALUES (%s,%s)",
                 (company_id, int(sid))
             )
         except Exception:
@@ -467,7 +474,7 @@ def api_comp_list():
         )
     else:
         cur.execute("SELECT * FROM sm_companies ORDER BY created_at DESC, id DESC")
-    rows = serialize_rows(cur.fetchall())
+    rows = serialize_rows(fetchall_dict(cur))
     for r in rows:
         r['solutions'] = comp_solutions(cur, r['id'])
     return jsonify(rows)
@@ -478,7 +485,7 @@ def api_comp_list():
 def api_comp_get(comp_id):
     cur = get_db().cursor()
     cur.execute("SELECT * FROM sm_companies WHERE id = %s LIMIT 1", (comp_id,))
-    row = cur.fetchone()
+    row = fetchone_dict(cur)
     if not row:
         return jsonify({'error': '존재하지 않습니다.'}), 404
     row = serialize_row(row)
@@ -506,7 +513,7 @@ def api_comp_create():
          null_or_str(b.get('corp_reg_no')), null_or_str(b.get('address')),
          null_or_str(b.get('phone')))
     )
-    new_id = cur.fetchone()['id']
+    new_id = fetchone_dict(cur)['id']
     comp_save_solutions(db, new_id, b.get('solution_ids') or [])
     db.commit()
     return jsonify({'success': True, 'id': new_id, 'company_code': code})
@@ -524,10 +531,8 @@ def api_comp_update(comp_id):
     cur.execute(
         """UPDATE sm_companies
            SET company_name=%s, ceo_name=%s, business_reg_no=%s,
-               corp_reg_no=%s, address=%s, phone=%s
-           WHERE id=%s""",
-        (company_name,
-         null_or_str(b.get('ceo_name')), null_or_str(b.get('business_reg_no')),
+               corp_reg_no=%s, address=%s, phone=%s WHERE id=%s""",
+        (company_name, null_or_str(b.get('ceo_name')), null_or_str(b.get('business_reg_no')),
          null_or_str(b.get('corp_reg_no')), null_or_str(b.get('address')),
          null_or_str(b.get('phone')), comp_id)
     )
@@ -564,15 +569,12 @@ def api_comp_import():
     ext = (f.filename or '').rsplit('.', 1)[-1].lower()
     if ext not in ('xlsx', 'xls', 'csv'):
         return jsonify({'success': False, 'message': 'Excel(.xlsx) 또는 CSV(.csv) 파일만 가능합니다.'}), 400
-
     rows = read_upload_file(f)
     if not rows:
         return jsonify({'success': False, 'message': '파일을 읽을 수 없거나 데이터가 없습니다.'}), 400
-
     db = get_db()
     cur = db.cursor()
-    ok = 0
-    errs = []
+    ok, errs = 0, []
     for i, row in enumerate(rows[1:], start=2):
         company_name = (row[0] if len(row) > 0 else '').strip()
         if not company_name:
@@ -610,11 +612,9 @@ def api_ct_list():
     search     = (request.args.get('search') or '').strip()
     company_id = null_or_int(request.args.get('company_id'))
     cur = get_db().cursor()
-    sql = """SELECT cc.*, c.company_name
-             FROM sm_company_contacts cc
+    sql = """SELECT cc.*, c.company_name FROM sm_company_contacts cc
              JOIN sm_companies c ON cc.company_id = c.id"""
-    params = []
-    conds  = []
+    params, conds = [], []
     if search:
         like = f'%{search}%'
         conds.append("(cc.name LIKE %s OR c.company_name LIKE %s)")
@@ -626,7 +626,7 @@ def api_ct_list():
         sql += ' WHERE ' + ' AND '.join(conds)
     sql += ' ORDER BY cc.created_at DESC'
     cur.execute(sql, params)
-    return jsonify(serialize_rows(cur.fetchall()))
+    return jsonify(serialize_rows(fetchall_dict(cur)))
 
 
 @app.route('/api/contacts/<int:ct_id>', methods=['GET'])
@@ -635,13 +635,12 @@ def api_ct_get(ct_id):
     db = get_db()
     cur = db.cursor()
     cur.execute(
-        """SELECT cc.*, c.company_name
-           FROM sm_company_contacts cc
+        """SELECT cc.*, c.company_name FROM sm_company_contacts cc
            JOIN sm_companies c ON cc.company_id = c.id
            WHERE cc.id = %s LIMIT 1""",
         (ct_id,)
     )
-    row = cur.fetchone()
+    row = fetchone_dict(cur)
     if not row:
         return jsonify({'error': '존재하지 않습니다.'}), 404
     row = serialize_row(row)
@@ -650,28 +649,25 @@ def api_ct_get(ct_id):
         """SELECT m.id, m.meeting_type, m.meeting_datetime, m.scheduled_datetime,
                   m.content, m.conclusion, m.follow_up,
                   STRING_AGG(DISTINCT co.company_name, ', ') AS companies,
-                  STRING_AGG(DISTINCT sr.name, ', ')         AS sales_reps
+                  STRING_AGG(DISTINCT sr.name, ', ') AS sales_reps
            FROM sm_meetings m
-           JOIN sm_meeting_contacts mc   ON m.id = mc.meeting_id
+           JOIN sm_meeting_contacts mc ON m.id = mc.meeting_id
            LEFT JOIN sm_meeting_companies mco ON m.id = mco.meeting_id
-           LEFT JOIN sm_companies co    ON mco.company_id = co.id
+           LEFT JOIN sm_companies co ON mco.company_id = co.id
            LEFT JOIN sm_meeting_sales_reps msr ON m.id = msr.meeting_id
-           LEFT JOIN sm_sales_reps sr   ON msr.sales_rep_id = sr.id
+           LEFT JOIN sm_sales_reps sr ON msr.sales_rep_id = sr.id
            WHERE mc.contact_id = %s
-           GROUP BY m.id
-           ORDER BY m.meeting_datetime DESC NULLS LAST""",
+           GROUP BY m.id ORDER BY m.meeting_datetime DESC NULLS LAST""",
         (ct_id,)
     )
-    row['meeting_history'] = serialize_rows(cur.fetchall())
+    row['meeting_history'] = serialize_rows(fetchall_dict(cur))
 
     cur.execute(
         """SELECT id, company_id, company_name, end_date, created_at
-           FROM sm_contact_company_history
-           WHERE contact_id = %s
-           ORDER BY created_at ASC""",
+           FROM sm_contact_company_history WHERE contact_id = %s ORDER BY created_at ASC""",
         (ct_id,)
     )
-    row['company_history'] = serialize_rows(cur.fetchall())
+    row['company_history'] = serialize_rows(fetchall_dict(cur))
     return jsonify(row)
 
 
@@ -691,11 +687,11 @@ def api_ct_create():
            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
         (name, company_id,
          null_or_str(b.get('department')), null_or_str(b.get('rank')),
-         null_or_str(b.get('position')),   null_or_str(b.get('job_type')),
+         null_or_str(b.get('position')), null_or_str(b.get('job_type')),
          null_or_str(b.get('office_phone')), null_or_str(b.get('mobile_phone')),
          null_or_str(b.get('email')))
     )
-    new_id = cur.fetchone()['id']
+    new_id = fetchone_dict(cur)['id']
     db.commit()
     return jsonify({'success': True, 'id': new_id})
 
@@ -709,35 +705,25 @@ def api_ct_update(ct_id):
     is_transfer = bool(b.get('is_transfer', False))
     if not name or not new_comp_id:
         return jsonify({'success': False, 'message': '성명과 업체명은 필수입니다.'}), 400
-
     db = get_db()
     cur = db.cursor()
-
     if is_transfer:
         cur.execute("SELECT company_id FROM sm_company_contacts WHERE id = %s LIMIT 1", (ct_id,))
-        old = cur.fetchone()
+        old = fetchone_dict(cur)
         if old and old['company_id'] != new_comp_id:
-            cur.execute(
-                "SELECT company_name FROM sm_companies WHERE id = %s LIMIT 1",
-                (old['company_id'],)
-            )
-            old_comp = cur.fetchone()
+            cur.execute("SELECT company_name FROM sm_companies WHERE id = %s LIMIT 1", (old['company_id'],))
+            old_comp = fetchone_dict(cur)
             if old_comp:
                 cur.execute(
-                    """INSERT INTO sm_contact_company_history
-                       (contact_id, company_id, company_name, end_date)
-                       VALUES (%s, %s, %s, CURRENT_DATE)""",
+                    "INSERT INTO sm_contact_company_history (contact_id, company_id, company_name, end_date) VALUES (%s,%s,%s,CURRENT_DATE)",
                     (ct_id, old['company_id'], old_comp['company_name'])
                 )
-
     cur.execute(
         """UPDATE sm_company_contacts
            SET name=%s, company_id=%s, department=%s, rank=%s, position=%s,
-               job_type=%s, office_phone=%s, mobile_phone=%s, email=%s
-           WHERE id=%s""",
-        (name, new_comp_id,
-         null_or_str(b.get('department')), null_or_str(b.get('rank')),
-         null_or_str(b.get('position')),   null_or_str(b.get('job_type')),
+               job_type=%s, office_phone=%s, mobile_phone=%s, email=%s WHERE id=%s""",
+        (name, new_comp_id, null_or_str(b.get('department')), null_or_str(b.get('rank')),
+         null_or_str(b.get('position')), null_or_str(b.get('job_type')),
          null_or_str(b.get('office_phone')), null_or_str(b.get('mobile_phone')),
          null_or_str(b.get('email')), ct_id)
     )
@@ -760,7 +746,7 @@ def api_ct_template():
     return download_csv(
         '업체담당자_등록양식.csv',
         ['성명(필수)', '업체명(필수)', '업체코드', '부서명', '직급', '직책', '직군', '일반전화', '휴대폰번호', '이메일'],
-        [['홍길동', '(주)예시업체', '20260417-001', '영업팀', '과장', '팀장', '영업',
+        [['홍길동', '(주)예시업체', '20260418-001', '영업팀', '과장', '팀장', '영업',
           '02-0000-0000', '010-0000-0000', 'hong@example.com']]
     )
 
@@ -774,44 +760,33 @@ def api_ct_import():
     ext = (f.filename or '').rsplit('.', 1)[-1].lower()
     if ext not in ('xlsx', 'xls', 'csv'):
         return jsonify({'success': False, 'message': 'Excel(.xlsx) 또는 CSV(.csv) 파일만 가능합니다.'}), 400
-
     rows = read_upload_file(f)
     if not rows:
         return jsonify({'success': False, 'message': '파일을 읽을 수 없거나 데이터가 없습니다.'}), 400
-
     db = get_db()
     cur = db.cursor()
     cur.execute("SELECT id, company_name, company_code FROM sm_companies")
-    name_map = {}
-    code_map = {}
-    for c in cur.fetchall():
+    name_map, code_map = {}, {}
+    for c in fetchall_dict(cur):
         name_map[c['company_name'].strip().lower()] = c['id']
         if c['company_code']:
             code_map[c['company_code'].strip()] = c['id']
-
-    ok = 0
-    errs = []
-    # 컬럼: 성명(0) 업체명(1) 업체코드(2) 부서(3) 직급(4) 직책(5) 직군(6) 일반전화(7) 휴대폰(8) 이메일(9)
+    ok, errs = 0, []
     for i, row in enumerate(rows[1:], start=2):
         row = [(c.strip() if c else '') for c in row]
         name      = row[0] if len(row) > 0 else ''
         comp_name = row[1] if len(row) > 1 else ''
         comp_code = row[2] if len(row) > 2 else ''
         if not name:
-            errs.append(f'행 {i}: 성명 없음')
-            continue
+            errs.append(f'행 {i}: 성명 없음'); continue
         if not comp_name and not comp_code:
-            errs.append(f"행 {i}: 업체명 또는 업체코드가 없습니다 (읽은 성명: '{name}')")
-            continue
-        comp_id = None
-        if comp_code:
-            comp_id = code_map.get(comp_code.strip())
+            errs.append(f"행 {i}: 업체명 또는 업체코드가 없습니다 (읽은 성명: '{name}')"); continue
+        comp_id = code_map.get(comp_code) if comp_code else None
         if comp_id is None and comp_name:
             comp_id = name_map.get(comp_name.strip().lower())
         if comp_id is None:
             ref = comp_code if comp_code else comp_name
-            errs.append(f"행 {i}: 업체 '{ref}' 를 찾을 수 없습니다 (업체명:'{comp_name}' 업체코드:'{comp_code}')")
-            continue
+            errs.append(f"행 {i}: 업체 '{ref}' 를 찾을 수 없습니다 (업체명:'{comp_name}' 업체코드:'{comp_code}')"); continue
         try:
             cur.execute(
                 """INSERT INTO sm_company_contacts
@@ -831,7 +806,6 @@ def api_ct_import():
             db.rollback()
             errs.append(f'행 {i}: {e}')
             cur = db.cursor()
-
     db.commit()
     return jsonify({'success': True, 'imported': ok, 'errors': errs})
 
@@ -849,57 +823,41 @@ def mt_save_relations(db, meeting_id, company_ids, contact_ids, sales_rep_ids):
     for cid in company_ids:
         cid = int(cid)
         if cid not in seen_c:
-            cur.execute(
-                "INSERT INTO sm_meeting_companies (meeting_id, company_id) VALUES (%s,%s)",
-                (meeting_id, cid)
-            )
+            cur.execute("INSERT INTO sm_meeting_companies (meeting_id, company_id) VALUES (%s,%s)", (meeting_id, cid))
             seen_c.add(cid)
     for nid in contact_ids:
         nid = int(nid)
         if nid not in seen_n:
-            cur.execute(
-                "INSERT INTO sm_meeting_contacts (meeting_id, contact_id) VALUES (%s,%s)",
-                (meeting_id, nid)
-            )
+            cur.execute("INSERT INTO sm_meeting_contacts (meeting_id, contact_id) VALUES (%s,%s)", (meeting_id, nid))
             seen_n.add(nid)
     for rid in sales_rep_ids:
         rid = int(rid)
         if rid not in seen_r:
-            cur.execute(
-                "INSERT INTO sm_meeting_sales_reps (meeting_id, sales_rep_id) VALUES (%s,%s)",
-                (meeting_id, rid)
-            )
+            cur.execute("INSERT INTO sm_meeting_sales_reps (meeting_id, sales_rep_id) VALUES (%s,%s)", (meeting_id, rid))
             seen_r.add(rid)
 
 
 def mt_get_relations(cur, meeting_id):
     cur.execute(
-        """SELECT c.id, c.company_name
-           FROM sm_meeting_companies mc
-           JOIN sm_companies c ON mc.company_id = c.id
-           WHERE mc.meeting_id = %s""",
+        """SELECT c.id, c.company_name FROM sm_meeting_companies mc
+           JOIN sm_companies c ON mc.company_id = c.id WHERE mc.meeting_id = %s""",
         (meeting_id,)
     )
-    companies = serialize_rows(cur.fetchall())
-
+    companies = serialize_rows(fetchall_dict(cur))
     cur.execute(
         """SELECT cc.id, cc.name, co.company_name, co.id AS company_id
            FROM sm_meeting_contacts mc
            JOIN sm_company_contacts cc ON mc.contact_id = cc.id
-           JOIN sm_companies co ON cc.company_id = co.id
-           WHERE mc.meeting_id = %s""",
+           JOIN sm_companies co ON cc.company_id = co.id WHERE mc.meeting_id = %s""",
         (meeting_id,)
     )
-    contacts = serialize_rows(cur.fetchall())
-
+    contacts = serialize_rows(fetchall_dict(cur))
     cur.execute(
-        """SELECT sr.id, sr.name
-           FROM sm_meeting_sales_reps msr
-           JOIN sm_sales_reps sr ON msr.sales_rep_id = sr.id
-           WHERE msr.meeting_id = %s""",
+        """SELECT sr.id, sr.name FROM sm_meeting_sales_reps msr
+           JOIN sm_sales_reps sr ON msr.sales_rep_id = sr.id WHERE msr.meeting_id = %s""",
         (meeting_id,)
     )
-    reps = serialize_rows(cur.fetchall())
+    reps = serialize_rows(fetchall_dict(cur))
     return companies, contacts, reps
 
 
@@ -915,19 +873,16 @@ def api_mt_list():
              LEFT JOIN sm_sales_reps sr ON m.registered_by = sr.id
              LEFT JOIN sm_meeting_companies mc ON m.id = mc.meeting_id
              LEFT JOIN sm_companies c ON mc.company_id = c.id"""
-    params = []
-    conds  = []
+    params, conds = [], []
     if sc:
-        conds.append("c.company_name LIKE %s")
-        params.append(f'%{sc}%')
+        conds.append("c.company_name LIKE %s"); params.append(f'%{sc}%')
     if ss:
-        conds.append("m.content LIKE %s")
-        params.append(f'%{ss}%')
+        conds.append("m.content LIKE %s"); params.append(f'%{ss}%')
     if conds:
         sql += ' WHERE ' + ' AND '.join(conds)
     sql += ' GROUP BY m.id, sr.name ORDER BY m.created_at DESC'
     cur.execute(sql, params)
-    rows = serialize_rows(cur.fetchall())
+    rows = serialize_rows(fetchall_dict(cur))
     for row in rows:
         _, contacts, reps = mt_get_relations(cur, row['id'])
         row['contacts']   = contacts
@@ -940,13 +895,11 @@ def api_mt_list():
 def api_mt_get(mt_id):
     cur = get_db().cursor()
     cur.execute(
-        """SELECT m.*, sr.name AS registered_by_name
-           FROM sm_meetings m
-           LEFT JOIN sm_sales_reps sr ON m.registered_by = sr.id
-           WHERE m.id = %s LIMIT 1""",
+        """SELECT m.*, sr.name AS registered_by_name FROM sm_meetings m
+           LEFT JOIN sm_sales_reps sr ON m.registered_by = sr.id WHERE m.id = %s LIMIT 1""",
         (mt_id,)
     )
-    row = cur.fetchone()
+    row = fetchone_dict(cur)
     if not row:
         return jsonify({'error': '존재하지 않습니다.'}), 404
     row = serialize_row(row)
@@ -968,24 +921,15 @@ def api_mt_create():
     cur = db.cursor()
     cur.execute(
         """INSERT INTO sm_meetings
-           (meeting_type, scheduled_datetime, meeting_datetime,
-            content, conclusion, follow_up, registered_by)
+           (meeting_type, scheduled_datetime, meeting_datetime, content, conclusion, follow_up, registered_by)
            VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
-        (null_or_str(b.get('meeting_type')),
-         null_or_str(b.get('scheduled_datetime')),
-         null_or_str(b.get('meeting_datetime')),
-         null_or_str(b.get('content')),
-         null_or_str(b.get('conclusion')),
-         null_or_str(b.get('follow_up')),
+        (null_or_str(b.get('meeting_type')), null_or_str(b.get('scheduled_datetime')),
+         null_or_str(b.get('meeting_datetime')), null_or_str(b.get('content')),
+         null_or_str(b.get('conclusion')), null_or_str(b.get('follow_up')),
          null_or_int(b.get('registered_by')))
     )
-    new_id = cur.fetchone()['id']
-    mt_save_relations(
-        db, new_id,
-        b.get('company_ids') or [],
-        b.get('contact_ids') or [],
-        b.get('sales_rep_ids') or []
-    )
+    new_id = fetchone_dict(cur)['id']
+    mt_save_relations(db, new_id, b.get('company_ids') or [], b.get('contact_ids') or [], b.get('sales_rep_ids') or [])
     db.commit()
     return jsonify({'success': True, 'id': new_id})
 
@@ -999,23 +943,13 @@ def api_mt_update(mt_id):
     cur.execute(
         """UPDATE sm_meetings
            SET meeting_type=%s, scheduled_datetime=%s, meeting_datetime=%s,
-               content=%s, conclusion=%s, follow_up=%s, registered_by=%s
-           WHERE id=%s""",
-        (null_or_str(b.get('meeting_type')),
-         null_or_str(b.get('scheduled_datetime')),
-         null_or_str(b.get('meeting_datetime')),
-         null_or_str(b.get('content')),
-         null_or_str(b.get('conclusion')),
-         null_or_str(b.get('follow_up')),
-         null_or_int(b.get('registered_by')),
-         mt_id)
+               content=%s, conclusion=%s, follow_up=%s, registered_by=%s WHERE id=%s""",
+        (null_or_str(b.get('meeting_type')), null_or_str(b.get('scheduled_datetime')),
+         null_or_str(b.get('meeting_datetime')), null_or_str(b.get('content')),
+         null_or_str(b.get('conclusion')), null_or_str(b.get('follow_up')),
+         null_or_int(b.get('registered_by')), mt_id)
     )
-    mt_save_relations(
-        db, mt_id,
-        b.get('company_ids') or [],
-        b.get('contact_ids') or [],
-        b.get('sales_rep_ids') or []
-    )
+    mt_save_relations(db, mt_id, b.get('company_ids') or [], b.get('contact_ids') or [], b.get('sales_rep_ids') or [])
     db.commit()
     return jsonify({'success': True})
 
@@ -1039,13 +973,10 @@ def api_code_list():
     cat = (request.args.get('category') or '').strip()
     cur = get_db().cursor()
     if cat:
-        cur.execute(
-            "SELECT * FROM sm_codes WHERE category = %s ORDER BY sort_order, id",
-            (cat,)
-        )
+        cur.execute("SELECT * FROM sm_codes WHERE category = %s ORDER BY sort_order, id", (cat,))
     else:
         cur.execute("SELECT * FROM sm_codes ORDER BY category, sort_order, id")
-    return jsonify(serialize_rows(cur.fetchall()))
+    return jsonify(serialize_rows(fetchall_dict(cur)))
 
 
 @app.route('/api/codes', methods=['POST'])
@@ -1058,16 +989,13 @@ def api_code_create():
         return jsonify({'success': False, 'message': '카테고리와 코드값은 필수입니다.'}), 400
     db = get_db()
     cur = db.cursor()
-    cur.execute(
-        "SELECT COALESCE(MAX(sort_order), -1) AS mx FROM sm_codes WHERE category = %s",
-        (cat,)
-    )
-    max_order = cur.fetchone()['mx']
+    cur.execute("SELECT COALESCE(MAX(sort_order), -1) AS mx FROM sm_codes WHERE category = %s", (cat,))
+    max_order = fetchone_dict(cur)['mx']
     cur.execute(
         "INSERT INTO sm_codes (category, code_value, sort_order) VALUES (%s,%s,%s) RETURNING id",
         (cat, val, max_order + 1)
     )
-    new_id = cur.fetchone()['id']
+    new_id = fetchone_dict(cur)['id']
     db.commit()
     return jsonify({'success': True, 'id': new_id})
 
@@ -1095,65 +1023,6 @@ def api_code_delete(code_id):
 
 
 # ============================================================
-# BASE_PATH 접두어 API 라우트 추가
-# ============================================================
-
-if _BASE:
-    _api_rules = [
-        ('/api/login',                  'POST',              api_login),
-        ('/api/logout',                 'POST',              api_logout),
-        ('/api/change-password',        'POST',              api_change_password),
-        ('/api/session',                'GET',               api_session),
-        ('/api/dashboard',              'GET',               api_dashboard),
-        ('/api/sales-reps',             'GET',               api_sr_list),
-        ('/api/sales-reps',             'POST',              api_sr_create),
-        ('/api/sales-reps/<int:rep_id>','GET',               api_sr_get),
-        ('/api/sales-reps/<int:rep_id>','PUT',               api_sr_update),
-        ('/api/sales-reps/<int:rep_id>','DELETE',            api_sr_delete),
-        ('/api/companies/template',     'GET',               api_comp_template),
-        ('/api/companies/import',       'POST',              api_comp_import),
-        ('/api/companies',              'GET',               api_comp_list),
-        ('/api/companies',              'POST',              api_comp_create),
-        ('/api/companies/<int:comp_id>','GET',               api_comp_get),
-        ('/api/companies/<int:comp_id>','PUT',               api_comp_update),
-        ('/api/companies/<int:comp_id>','DELETE',            api_comp_delete),
-        ('/api/contacts/template',      'GET',               api_ct_template),
-        ('/api/contacts/import',        'POST',              api_ct_import),
-        ('/api/contacts',               'GET',               api_ct_list),
-        ('/api/contacts',               'POST',              api_ct_create),
-        ('/api/contacts/<int:ct_id>',   'GET',               api_ct_get),
-        ('/api/contacts/<int:ct_id>',   'PUT',               api_ct_update),
-        ('/api/contacts/<int:ct_id>',   'DELETE',            api_ct_delete),
-        ('/api/meetings',               'GET',               api_mt_list),
-        ('/api/meetings',               'POST',              api_mt_create),
-        ('/api/meetings/<int:mt_id>',   'GET',               api_mt_get),
-        ('/api/meetings/<int:mt_id>',   'PUT',               api_mt_update),
-        ('/api/meetings/<int:mt_id>',   'DELETE',            api_mt_delete),
-        ('/api/codes',                  'GET',               api_code_list),
-        ('/api/codes',                  'POST',              api_code_create),
-        ('/api/codes/<int:code_id>',    'PUT',               api_code_update),
-        ('/api/codes/<int:code_id>',    'DELETE',            api_code_delete),
-    ]
-
-    # 같은 (full_path, method) 조합만 한 번씩 등록
-    _registered_bp = set()
-    for _path, _method, _view in _api_rules:
-        _full_path = _BASE + _path
-        _key = (_full_path, _method)
-        if _key in _registered_bp:
-            continue
-        _registered_bp.add(_key)
-        # endpoint 이름: 'bp_' + 뷰이름 + '_' + 메서드 (중복 없음)
-        _ep_name = f'bp_{_view.__name__}_{_method.lower()}'
-        app.add_url_rule(
-            _full_path,
-            endpoint=_ep_name,
-            view_func=_view,
-            methods=[_method]
-        )
-
-
-# ============================================================
 # 에러 핸들러
 # ============================================================
 
@@ -1174,4 +1043,6 @@ def internal_error(e):
 # ============================================================
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    import os
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
